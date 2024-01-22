@@ -1,0 +1,164 @@
+import os
+import time
+import pickle
+
+import random
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from datetime import timedelta, datetime, date
+from thetadata import ThetaClient, OptionReqType, OptionRight, StockReqType, DateRan
+from dotenv import load_dotenv
+load_dotenv()
+
+your_username = os.environ['thetadata_username']
+your_password = os.environ['thetadata_password']
+
+def get_expirations(root_ticker) -> pd.DataFrame:
+    """Request expirations from a particular options root"""
+    # Create a ThetaClient
+    client = ThetaClient(username=your_username, passwd=your_password, jvm_mem=4, timeout=15)
+
+    # Connect to the Terminal
+    with client.connect():
+
+        # Make the request
+        data = client.get_expirations(
+            root=root_ticker,
+        )
+
+    return data
+root_ticker = 'MSFT'
+expirations = get_expirations(root_ticker)
+expirations
+def get_strikes(root_ticker, expiration_dates) -> dict:
+    """Request strikes from a particular option contract"""
+    # Create a ThetaClient
+    client = ThetaClient(username=your_username, passwd=your_password, jvm_mem=4, timeout=15)
+
+    all_strikes = {}
+
+    # Connect to the Terminal
+    with client.connect():
+
+        for exp_date in expiration_dates:
+
+            # Make the request
+            data = client.get_strikes(
+                root=root_ticker,
+                exp=exp_date
+            )
+
+            all_strikes[exp_date] = pd.to_numeric(data)
+
+
+    return all_strikes
+root_ticker = 'MSFT'
+
+all_strikes = get_strikes(root_ticker, expirations)
+
+with open('MSFT_strikes.pkl', 'wb') as f:
+    pickle.dump(all_strikes, f)
+with open('MSFT_strikes.pkl', 'rb') as f:
+    all_strikes = pd.read_pickle(f)
+
+all_strikes[expirations[360]]
+def get_mth_expirations(expirations: pd.Series) -> pd.Series:
+    trading_days = pd.date_range(start=datetime(2012,6,1),end=datetime(2023,11,14),freq='B')
+    # The third friday in every month
+    contracts1 = pd.date_range(start=datetime(2012,6,1),end=datetime(2024,12,31),freq='WOM-3FRI')
+    # Saturday following the third friday in every month
+    contracts2 = pd.date_range(start=datetime(2012,6,1),end=datetime(2022,12,31),freq='WOM-3FRI')+timedelta(days=1)
+    # Combine these contracts into a total pandas index list
+    contracts = contracts1.append(contracts2)
+    # Find contract expiries that match with ThetaData expiries
+    mth_expirations = [exp for exp in expirations if exp in contracts]
+    # Convert from python list to pandas datetime
+    mth_expirations = pd.to_datetime(pd.Series(mth_expirations))
+    # print information of processed expiration data
+    print('Number of possible monthly contracts', len(contracts), 'compared to total avail',len(mth_expirations),
+      'compared to total no. options avail (incl. quarterly + weekly)', len(expirations))
+    return mth_expirations
+
+mth_expirations = get_mth_expirations(expirations)
+# Make the request
+def get_option_trades(root_ticker, exp_date, strikes, start_date, end_date, interval_size=0, opt_type=OptionRight.CALL) -> pd.DataFrame:
+    """Request trades for particular contract across a number of strikes"""
+    # Create a ThetaClient
+    client = ThetaClient(username=your_username, passwd=your_password, jvm_mem=12, timeout=30)
+
+    # Store all iv in datas dictionary
+    datas = {}
+
+    # Connect to the Terminal
+    with client.connect():
+
+        # For each expiry we want to get closest ATM iv
+        for strike in strikes:
+
+            try:
+                # Attempt to request historical options implied volatility
+                data = client.get_hist_option(
+                    req=OptionReqType.TRADE_QUOTE,
+                    root=root_ticker,
+                    exp=exp_date,
+                    strike=strike,
+                    right=opt_type,
+                    date_range=DateRange(start_date, end_date),
+                    progress_bar=False,
+                    interval_size=interval_size
+                )
+
+                # Store data in dictionary
+                datas[strike] = data
+
+            except Exception as e:
+                # If unavailable, store np.nan
+                datas[strike] =  np.nan
+                print(e)
+
+    return datas
+exp_date = mth_expirations[130]
+strikes = all_strikes[exp_date].tolist()
+
+print('expiry date:\n', exp_date, '\n')
+print('strikes:\n', strikes)
+root_ticker = 'MSFT'
+start_date = datetime(2023,1,1)
+end_date = datetime(2023,6,6)
+
+trades = get_option_trades(root_ticker, exp_date, strikes, start_date, end_date)
+
+with open('trades.pkl', 'wb') as f:
+    pickle.dump(trades, f)
+with open('trades.pkl', 'rb') as f:
+    trades = pd.read_pickle(f)
+
+for k, v in trades.items():
+    print(k, 0 if np.isnan(v).any().any() else len(v))
+    trades_df = trades[300.0]
+    trades_df
+    contract_size = 100
+    trades_df['DATETIME'] = trades_df[DataType.DATE] + pd.TimedeltaIndex(trades_df[DataType.MS_OF_DAY], unit='ms')
+    trades_df['Value'] = trades_df.apply(lambda row: row[DataType.PRICE] * row[DataType.SIZE] * contract_size, axis=1)
+    trades_df['Volume Order'] = trades_df[DataType.SIZE].rank(ascending=True, method='first')
+    trades_df.set_index('DATETIME', inplace=True)
+    trades_df.sort_index()
+    trade_cond = {x.value: x.name for x in TradeCondition}
+    exchanges = {x.value[0]: x.name for x in Exchange}
+    trades_df['Condition'] = trades_df.apply(
+        lambda row: trade_cond[row[DataType.CONDITION]] if row[DataType.CONDITION] in trade_cond.keys() else trade_cond[
+            -row[DataType.CONDITION]], axis=1)
+    trades_df.groupby('Condition').agg({DataType.SIZE: 'sum'})
+    trades_df['BID_EXCHANGE'] = trades_df.apply(
+        lambda row: exchanges[row[DataType.BID_EXCHANGE]] if row[DataType.BID_EXCHANGE] in exchanges.keys() else
+        exchanges[-row[DataType.BID_EXCHANGE]], axis=1)
+    trades_df['ASK_EXCHANGE'] = trades_df.apply(
+        lambda row: exchanges[row[DataType.ASK_EXCHANGE]] if row[DataType.ASK_EXCHANGE] in exchanges.keys() else
+        exchanges[-row[DataType.ASK_EXCHANGE]], axis=1)
+    trades_df.groupby(['BID_EXCHANGE']).agg({DataType.SIZE: 'sum'})
+    trades_df = trades_df.drop(
+        columns=[DataType.MS_OF_DAY, DataType.MS_OF_DAY2, DataType.SEQUENCE, DataType.CONDITION, DataType.BID_EXCHANGE,
+                 DataType.ASK_EXCHANGE])
+    trades_df
