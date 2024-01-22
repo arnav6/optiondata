@@ -1,0 +1,124 @@
+import scipy as sc
+
+def std_dev(price_diff: pd.Series, n: int):
+    if len(price_diff) < n:
+        raise ValueError(f'Lookback window is greater than rows of dataframe ({len(price_diff)})')
+    else:
+        return price_diff.rolling(window=n).std()
+
+def bulk_volume_classifier(ohlc_vol_bars: pd.DataFrame, lookback: int, df: float = 0.25) -> pd.DataFrame:
+    """Classify's traded volume into fraction of buy's and sell's
+
+    Algorithm: Bulk Volume Classification created by Easley, Lopez de Prado and O'Hara (2016)
+
+    Args:
+        bar_ohlc_vol (pd.DataFrame): price bar with ohlc and volume data
+        lookback (int): number of lookback bars used for standard deviation calculation
+        df (int): degrees of freedom within the Student t distribution
+
+    Returns:
+        pd.DataFrame: fraction of buys vs sells per price bar normalised between [-1,1]
+
+    """
+    # calculate deltaP and sigmaP
+    deltaP = ohlc_vol_bars.close-ohlc_vol_bars.close.shift(1)
+    sigmaP = std_dev(price_diff=deltaP, n=lookback)
+    # z variable for student t-distribution
+    z = deltaP/sigmaP
+    # weighted
+    x = sc.stats.t.cdf(z,df)
+    # calculate Vb_hat, Vs_hat individually
+    Vb_hat = ohlc_vol_bars.volume * x
+    Vs_hat = ohlc_vol_bars.volume * (1-x)
+    # rename pd.Series before concatinating
+    Vb_hat.name = 'V_buy'
+    Vs_hat.name = 'V_sell'
+    # combine pd.Series and create pd.DataFrame
+    res = pd.concat([Vb_hat, Vs_hat], axis=1)
+    # this is the frac of buys to total volume traded
+    res['V_frac'] = x
+    return res
+def bar(x, y):
+    return np.int64(x/y)*y
+def create_tick_bars(trades: pd.DataFrame, transactions: int) -> pd.DataFrame:
+    tick_bars_raw = trades.groupby(bar(np.arange(len(trades)), transactions)).agg({DataType.PRICE: 'ohlc', DataType.SIZE: 'sum'})
+    tick_bars = tick_bars_raw.loc[:,DataType.PRICE]
+    tick_bars['volume'] = tick_bars_raw.loc[:,DataType.SIZE]
+    return tick_bars
+
+no_transactions = 20
+tick_bars = create_tick_bars(trades_df, no_transactions)
+tick_bars_plot = np.log(tick_bars.close/tick_bars.close.shift(1)).dropna()
+bin_len = 0.01
+plt.hist(tick_bars_plot, bins=np.arange(min(tick_bars_plot),max(tick_bars_plot)+bin_len, bin_len))
+plt.show()
+def create_volume_bars(trades: pd.DataFrame, volume: int) -> pd.DataFrame:
+    volume_bars_raw = trades.groupby(bar(np.cumsum(trades[DataType.SIZE]), volume)).agg({DataType.PRICE: 'ohlc', DataType.SIZE: 'sum'})
+    volume_bars = volume_bars_raw.loc[:,DataType.PRICE]
+    volume_bars['volume'] = volume_bars_raw.loc[:,DataType.SIZE]
+    return volume_bars
+
+traded_volume = 10
+volume_bars = create_volume_bars(trades_df, traded_volume)
+volume_bars_plot = np.log(volume_bars.close/volume_bars.close.shift(1)).dropna()
+bin_len = 0.01
+plt.hist(volume_bars_plot, bins=np.arange(min(volume_bars_plot),max(volume_bars_plot)+bin_len, bin_len))
+plt.show()
+
+
+
+
+no_transactions = 5
+tick_bars = create_tick_bars(trades_df, no_transactions)
+
+traded_volume = 5
+volume_bars = create_volume_bars(trades_df, traded_volume)
+
+bvc = bulk_volume_classifier(ohlc_vol_bars=tick_bars, lookback=100)
+bvc.loc[:,'close'] = tick_bars.close
+
+bvc
+subset = 100
+
+fig, ax1 = plt.subplots()
+ax2 = ax1.twinx()
+ax1.scatter(bvc.index[-subset:], bvc.V_frac[-subset:], marker='x', color=np.where(bvc.V_frac[-subset:]>0.5, 'blue', 'red'), alpha=0.5)
+ax2.plot(tick_bars.close[-subset:], 'k')
+
+ax1.set_xlabel('bars index (no. of trades / cumulative volume)')
+ax1.set_ylabel('Frac of Buys', color='tab:blue')
+ax2.set_ylabel('Price', color='k')
+
+plt.show()
+def create_indicator(arr: np.ndarray) -> np.ndarray:
+    """Takes numpy array [0,1] and normalises values between [-1,1]"""
+    return 2 * arr - 1
+
+def moving_average(indicator: pd.Series, n: int) -> pd.Series:
+    """Takes indicator every time period, provides moving average"""
+    return indicator.rolling(window=n).mean()
+
+bvc['indicator'] = create_indicator(bvc.V_frac)
+bvc['ma10'] = moving_average(bvc.indicator, 10)
+subset = 10000
+
+bvc_subset = bvc[-subset:]
+
+fig, ax1 = plt.subplots()
+# plot line chart on axis #1
+
+ax1.bar(bvc_subset.index, bvc_subset.indicator, label='BVC', width=no_transactions, alpha=0.5, color=np.where(bvc_subset.indicator[-subset:]>0, 'cornflowerblue', 'tomato'))
+ax1.plot(bvc_subset.index, bvc_subset.ma10, label='MA10 (BVC)', alpha=0.5)
+# set up the 2nd axis
+ax2 = ax1.twinx()
+# plot bar chart on axis #2
+ax2.plot(bvc_subset.index, bvc_subset.close, 'k-', label='Prices')
+ax2.grid(False) # turn off grid #2
+
+ax1.set_xlabel('bars index (no. of trades / cumulative volume)')
+ax1.set_ylabel('BVC Indicator', color='tab:blue')
+ax2.set_ylabel('Option Price', color='k')
+
+fig.legend(loc=9)
+
+plt.show()
